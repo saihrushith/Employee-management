@@ -249,15 +249,17 @@ async function onWant(viewer) {
 }
 
 /* ============================== MANAGER ============================== */
-const M = { lastFrame: 0, emp: null, sal: 0, sig: null, pc: null, viewer: Math.random().toString(36).slice(2), connected: false, ice: [], pres: null, att: null, feed: [], tab: 'live' };
+const M = { lastFrame: 0, emps: [], all: {}, emp: null, sal: 0, sig: null, pc: null, viewer: Math.random().toString(36).slice(2), connected: false, ice: [], pres: null, att: null, feed: [], tab: 'live' };
 
 async function startManager() {
   $('attMonth').value = $('payMonth').value = todayIST().slice(0, 7);
-  const { data: emps } = await sb.from('profiles').select('*').eq('role', 'employee').eq('is_test', !!me.is_test).limit(1);
-  M.emp = emps && emps[0]; if (!M.emp) { $('mAlerts').innerHTML = '<div class="alert">No employee found.</div>'; return; }
+  const { data: emps } = await sb.from('profiles').select('*').eq('role', 'employee').eq('is_test', !!me.is_test).order('full_name');
+  M.emps = emps || []; let last = null; try { last = localStorage.getItem('selEmp'); } catch (_) { /* ignore */ }
+  M.emp = M.emps.find((x) => x.id === last) || M.emps[0]; if (!M.emp) { $('mAlerts').innerHTML = '<div class="alert">No employee found.</div>'; return; }
   $('tabs').onclick = (e) => { const t = e.target.dataset.t; if (!t) return; M.tab = t; [...$('tabs').children].forEach((b) => b.classList.toggle('on', b === e.target)); ['live', 'att', 'pay', 'work', 'hol'].forEach((k) => $('t-' + k).classList.toggle('hidden', k !== t)); if (t !== 'live') stopWatch(); else want(); loadTab(t); };
+  $('empBar').onclick = (e) => { const c = e.target.closest('[data-id]'); if (c) selectEmp(c.dataset.id); };
   await refreshLive();
-  watchScreen();
+  watchScreen(); initWatchLoop();
   const ch = sb.channel('mgr-db');
   ['presence', 'events', 'attendance', 'breaks', 'tasks'].forEach((t) => ch.on('postgres_changes', { event: '*', schema: 'public', table: t }, () => { if (M.tab === 'live') refreshLive(); else if (M.tab === 'work') loadTab(M.tab); }));
   ch.subscribe();
@@ -289,6 +291,8 @@ function watchScreen() {
     if (payload.to !== M.viewer) return;
     if (M.pc && M.pc.remoteDescription) M.pc.addIceCandidate(payload.c).catch(() => {}); else M.ice.push(payload.c);
   }).subscribe((s) => { if (s === 'SUBSCRIBED') want(); });
+}
+function initWatchLoop() {
   setInterval(() => {
     if (!watching()) return;
     if (M.pc && !M.connected && Date.now() - (M.pc._t || 0) > 20000) { M.pc.close(); M.pc = null; } // stuck: start over
@@ -300,6 +304,13 @@ function watchScreen() {
   window.addEventListener('pagehide', stopWatch);
 }
 const watching = () => M.tab === 'live' && !document.hidden;
+async function selectEmp(id) {
+  const e = M.emps.find((x) => x.id === id); if (!e || e.id === M.emp.id) return;
+  stopWatch(); if (M.sig) { sb.removeChannel(M.sig); M.sig = null; }
+  M.emp = e; M.pres = M.att = null; M.breaks = []; M.feed = []; M.log = [];
+  try { localStorage.setItem('selEmp', id); } catch (_) { /* ignore */ }
+  watchScreen(); await refreshLive(); if (M.tab !== 'live') loadTab(M.tab);
+}
 function stopWatch() {
   if (M.sig) M.sig.send({ type: 'broadcast', event: 'bye', payload: { from: M.viewer } });
   if (M.pc) { M.pc.close(); M.pc = null; }
@@ -318,18 +329,19 @@ function setLive(on) {
 async function refreshLive() {
   const d = todayIST(); const id = M.emp.id;
   const [p, a, b, ev, lg] = await Promise.all([
-    sb.from('presence').select('*').eq('user_id', id).maybeSingle(),
-    sb.from('attendance').select('*').eq('user_id', id).eq('work_date', d).maybeSingle(),
+    sb.from('presence').select('*'),
+    sb.from('attendance').select('*').eq('work_date', d),
     sb.from('breaks').select('*').eq('user_id', id).eq('work_date', d).order('start_at'),
     sb.from('events').select('*').eq('user_id', id).gte('ts', dayStart(d).toISOString()).order('ts', { ascending: false }).limit(60),
     sb.from('activity_log').select('ts,state,sharing').eq('user_id', id).gte('ts', dayStart(d).toISOString()).order('ts')
   ]);
-  M.pres = p.data; M.att = a.data; M.breaks = b.data || []; M.feed = ev.data || []; M.log = lg.data || [];
+  M.all = {}; M.emps.forEach((x) => { M.all[x.id] = { p: (p.data || []).find((r) => r.user_id === x.id) || null, a: (a.data || []).find((r) => r.user_id === x.id) || null }; });
+  M.pres = M.all[id].p; M.att = M.all[id].a; M.breaks = b.data || []; M.feed = ev.data || []; M.log = lg.data || [];
   renderLive();
 }
 
-function statusOf() {
-  const p = M.pres, a = M.att; const now = Date.now();
+function statusOf(p = M.pres, a = M.att) {
+  const now = Date.now();
   const lateCut = new Date(dayStart(todayIST()).getTime() + (10 * 60 + CFG.grace) * 60000 + 60000);
   if (!a) return now > lateCut ? { k: 'absent', t: 'Not logged in (late)' } : { k: 'pending', t: 'Not logged in yet' };
   if (a.logout_at) return { k: 'offline', t: 'Logged out' };
@@ -341,10 +353,14 @@ function renderLive() {
   if (!M.emp) return;
   const a = M.att, p = M.pres, s = statusOf(), now = Date.now();
   const alerts = [];
-  if (!a && s.k === 'absent') alerts.push(['alert', `${M.emp.full_name} has not logged in. 10:10 AM has passed. A late/absent deduction applies.`]);
-  if (a && !a.logout_at && p && !p.sharing && s.k !== 'lost') alerts.push(['alert', 'Screen sharing is OFF.']);
-  if (s.k === 'lost') alerts.push(['alert warn', 'Connection lost: no heartbeat for over 75 seconds (tab closed, computer asleep, or no internet).']);
-  if (a && a.late) alerts.push(['alert warn', `Late login at ${fmtT(a.login_at)}. 1/4 of today's pay will be cut.`]);
+  $('empBar').innerHTML = M.emps.length > 1 ? M.emps.map((x) => { const d = M.all[x.id] || {}; const st = statusOf(d.p, d.a); return `<div class="chip ${x.id === M.emp.id ? 'on' : ''}" data-id="${x.id}"><b>${esc(x.full_name)}</b><span class="pill ${st.k}">${st.t}</span></div>`; }).join('') : '';
+  M.emps.forEach((x) => {
+    const d = M.all[x.id] || {}; const st = statusOf(d.p, d.a); const nm = M.emps.length > 1 ? x.full_name + ': ' : '';
+    if (!d.a && st.k === 'absent') alerts.push(['alert', `${nm}has not logged in. 10:10 AM has passed. A late/absent deduction applies.`]);
+    if (d.a && !d.a.logout_at && d.p && !d.p.sharing && st.k !== 'lost') alerts.push(['alert', `${nm}Screen sharing is OFF.`]);
+    if (st.k === 'lost') alerts.push(['alert warn', `${nm}Connection lost: no heartbeat for over 75 seconds (tab closed, computer asleep, or no internet).`]);
+    if (d.a && d.a.late) alerts.push(['alert warn', `${nm}Late login at ${fmtT(d.a.login_at)}. 1/4 of that day's pay will be cut.`]);
+  });
   $('mAlerts').innerHTML = alerts.map(([c, t]) => `<div class="${c}">${esc(t)}</div>`).join('');
   const lunches = (M.breaks || []).filter((b) => b.kind === 'lunch');
   const lunchSec = lunches.reduce((x, b) => x + ((b.end_at ? new Date(b.end_at) : new Date()) - new Date(b.start_at)) / 1000, 0);
