@@ -100,6 +100,7 @@ label.f{display:grid;gap:4px;color:var(--muted);font-size:12px}
     <span class="sp"></span>
     <span id="eShare" class="pill offline">Screen not shared</span>
     <button id="eLunch" class="ghost">Start lunch</button>
+    <button class="ghost cpw">Change password</button>
     <button id="eOut" class="danger">Log out</button>
   </header>
   <div class="wrap">
@@ -138,6 +139,7 @@ label.f{display:grid;gap:4px;color:var(--muted);font-size:12px}
     <span class="muted">Manager console</span>
     <span class="sp"></span>
     <span id="mClock" class="muted"></span>
+    <button class="ghost cpw">Change password</button>
     <button id="mOut" class="ghost">Log out</button>
   </header>
   <div class="wrap">
@@ -196,6 +198,7 @@ label.f{display:grid;gap:4px;color:var(--muted);font-size:12px}
     </div>
 
     <div id="t-hol" class="hidden card">
+      <div class="row" style="margin-bottom:14px"><h3>Idle break after</h3><input id="idleMin" type="number" min="1" max="60" style="width:80px"><span class="muted">minutes without activity</span><button id="idleSave" class="ghost">Save</button><span id="idleOk" class="muted"></span></div>
       <h3>Holidays</h3>
       <p class="muted">Sundays are holidays automatically. Add festivals here; they are paid and never count as absent.</p>
       <div class="row"><input id="hDate" type="date" style="width:auto"><input id="hName" placeholder="Festival name" style="max-width:260px"><button id="hAdd">Mark holiday</button></div>
@@ -205,6 +208,15 @@ label.f{display:grid;gap:4px;color:var(--muted);font-size:12px}
 </section>
 
 
+<div id="pwModal" class="gate hidden" style="z-index:40">
+  <form id="pwForm" class="box">
+    <h2>Change password</h2>
+    <label class="f" style="text-align:left">New password (min 8 characters)<input id="pw1" type="password" minlength="8" required autocomplete="new-password"></label>
+    <label class="f" style="text-align:left">Confirm new password<input id="pw2" type="password" minlength="8" required autocomplete="new-password"></label>
+    <div id="pwMsg" class="err"></div>
+    <div class="row" style="justify-content:center"><button type="submit">Update password</button><button type="button" id="pwCancel" class="ghost">Cancel</button></div>
+  </form>
+</div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script src="app.js"></script>
 </body>

@@ -24,6 +24,18 @@ const inr = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFract
 const show = (id) => { ['v-login', 'v-emp', 'v-mgr'].forEach((v) => $(v).classList.toggle('hidden', v !== id)); };
 
 let me = null;
+document.querySelectorAll('.cpw').forEach((b) => b.onclick = () => { $('pwMsg').textContent = ''; $('pwForm').reset(); $('pwModal').classList.remove('hidden'); });
+$('pwCancel').onclick = () => $('pwModal').classList.add('hidden');
+$('pwForm').onsubmit = async (e) => {
+  e.preventDefault();
+  if ($('pw1').value !== $('pw2').value) { $('pwMsg').textContent = 'Passwords do not match.'; return; }
+  if ($('pw1').value.length < 8) { $('pwMsg').textContent = 'Use at least 8 characters.'; return; }
+  const { error } = await sb.auth.updateUser({ password: $('pw1').value });
+  if (error) { $('pwMsg').textContent = error.message; return; }
+  $('pwMsg').style.color = 'var(--ok)'; $('pwMsg').textContent = 'Password updated.';
+  setTimeout(() => { $('pwModal').classList.add('hidden'); $('pwMsg').style.color = ''; }, 1200);
+};
+let accessToken = null; sb.auth.onAuthStateChange((_e, s) => { accessToken = s ? s.access_token : null; });
 (async function boot() {
   const { data: { session } } = await sb.auth.getSession();
   if (!session) return show('v-login');
@@ -51,6 +63,8 @@ const E = { att: null, stream: null, video: null, cv: null, ctx: null, prev: nul
 
 async function startEmployee() {
   $('eName').textContent = me.full_name;
+  const { data: cfg } = await sb.from('settings').select('idle_minutes').eq('id', 1).single();
+  if (cfg) CFG.idleMs = cfg.idle_minutes * 60 * 1000;
   const { data: att, error } = await sb.rpc('rpc_login');
   if (error) { alert(error.message); return; }
   E.att = att; E.lastAct = Date.now();
@@ -63,6 +77,7 @@ async function startEmployee() {
   ['mousemove', 'keydown', 'mousedown', 'wheel', 'touchstart', 'scroll'].forEach((ev) => document.addEventListener(ev, bump, { passive: true, capture: true }));
   const blob = new Blob(['setInterval(()=>postMessage(0),1000)'], { type: 'text/javascript' });
   E.worker = new Worker(URL.createObjectURL(blob));
+  window.addEventListener('pagehide', () => { if (accessToken && !E.loggingOut) fetch(CFG.url + '/rest/v1/rpc/rpc_tab_closed', { method: 'POST', keepalive: true, headers: { apikey: CFG.key, Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {}); });
   E.worker.onmessage = tick; // worker timers are not throttled when the tab is in the background
   renderEmp();
 }
@@ -150,6 +165,7 @@ $('eLunch').onclick = async () => {
 };
 async function empLogout() {
   if (!confirm('Log out for the day? Your screen sharing will stop.')) return;
+  E.loggingOut = true;
   if (E.stream) E.stream.getTracks().forEach((t) => { t.onended = null; t.stop(); });
   E.stream = null; closeAllPcs(); if (E.worker) E.worker.terminate();
   await sb.rpc('rpc_logout'); await sb.auth.signOut(); location.reload();
@@ -161,7 +177,7 @@ async function renderEmp() {
   $('eState').className = 'pill ' + st; $('eState').textContent = { active: 'Working', idle: 'On break (idle)', lunch: 'Lunch' }[st];
   $('eShare').className = 'pill ' + (E.stream ? 'active' : 'offline'); $('eShare').textContent = E.stream ? 'Entire screen shared' : 'Screen not shared';
   $('eLunch').textContent = st === 'lunch' ? 'End lunch' : 'Start lunch';
-  $('eBanner').innerHTML = st === 'idle' ? `<div class="alert warn">Break started: no activity for 5 minutes (since ${fmtT(E.idleSince)}). Work on your screen to resume.</div>` : '';
+  $('eBanner').innerHTML = st === 'idle' ? `<div class="alert warn">Break started: no activity for ${Math.round(CFG.idleMs / 60000)} minutes (since ${fmtT(E.idleSince)}). Work on your screen to resume.</div>` : '';
   const { data: a } = await sb.rpc('rpc_my_today');
   if (a && a.login_at) { $('eActive').textContent = dur(a.active_seconds); $('eIdle').textContent = dur(a.idle_seconds); }
   const { data: l } = await sb.from('breaks').select('*').eq('user_id', me.id).eq('kind', 'lunch').eq('work_date', todayIST()).order('start_at');
@@ -292,10 +308,10 @@ function renderLive() {
     tile('Logout', a && a.logout_at ? fmtT(a.logout_at) : '-', a && !a.logout_at ? 'Still working' : '') +
     tile('Net working time', dur(worked), 'login to now, minus lunch') +
     tile('Active', dur(active), 'screen/keyboard activity') +
-    tile('Idle breaks', dur(idle), `${(M.breaks || []).filter((b) => b.kind === 'idle').length} breaks (5+ min no activity)`) +
+    tile('Idle breaks', dur(idle), `${(M.breaks || []).filter((b) => b.kind === 'idle').length} breaks (idle or offline)`) +
     tile('Productivity', a ? prod + '%' : '-', 'active ÷ (active + idle)') +
     tile('Last activity', la === null ? '-' : (la < 1 ? 'just now' : la + ' min ago'), '');
-  const lbl = { login: 'Logged in', logout: 'Logged out', lunch_start: 'Lunch started', lunch_end: 'Lunch ended', idle_start: 'Break started (idle)', idle_end: 'Back from break', share_started: 'Started sharing entire screen', share_stopped: 'STOPPED screen sharing', wrong_surface: 'Tried sharing a window/tab (rejected)' };
+  const lbl = { login: 'Logged in', logout: 'Logged out', lunch_start: 'Lunch started', lunch_end: 'Lunch ended', idle_start: 'Break started (idle)', offline_gap: 'Was away (tab closed / offline)', tab_closed: 'Closed or refreshed the tab', idle_end: 'Back from break', share_started: 'Started sharing entire screen', share_stopped: 'STOPPED screen sharing', wrong_surface: 'Tried sharing a window/tab (rejected)' };
   $('mFeed').innerHTML = M.feed.length ? M.feed.map((e) => `<div><time>${fmtT(e.ts)}</time><span>${esc(lbl[e.kind] || e.kind)}${e.detail ? ` <span class="muted">${esc(e.detail)}</span>` : ''}</span></div>`).join('') : '<span class="muted">No events yet today.</span>';
   drawTimeline();
 }
@@ -372,6 +388,7 @@ $('tkAdd').onclick = async () => {
 };
 
 async function loadHol() {
+  const { data: st } = await sb.from('settings').select('idle_minutes').eq('id', 1).single(); if (st) $('idleMin').value = st.idle_minutes;
   const { data } = await sb.from('holidays').select('*').order('day', { ascending: false });
   $('hTable').innerHTML = '<tr><th>Date</th><th>Festival</th><th></th></tr>' + (data || []).map((h) => `<tr><td>${fmtD(h.day + 'T12:00:00+05:30')}</td><td>${esc(h.name)}</td><td><button class="ghost" data-d="${h.day}">Remove</button></td></tr>`).join('');
   $('hTable').querySelectorAll('button').forEach((b) => b.onclick = async () => { if (confirm('Remove this holiday?')) { await sb.from('holidays').delete().eq('day', b.dataset.d); loadHol(); } });
@@ -379,4 +396,10 @@ async function loadHol() {
 $('hAdd').onclick = async () => {
   const day = $('hDate').value, name = $('hName').value.trim(); if (!day || !name) return;
   const { error } = await sb.from('holidays').upsert({ day, name }); if (error) alert(error.message); $('hName').value = ''; loadHol();
+};
+
+$('idleSave').onclick = async () => {
+  const v = Math.round(Number($('idleMin').value)); if (!(v >= 1 && v <= 60)) { $('idleOk').textContent = 'Enter 1 to 60'; return; }
+  const { error } = await sb.from('settings').update({ idle_minutes: v }).eq('id', 1);
+  $('idleOk').textContent = error ? error.message : 'Saved. Applies when Divya next logs in or reloads.'; setTimeout(() => $('idleOk').textContent = '', 5000);
 };
