@@ -8,7 +8,6 @@ const CFG = {
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }],
   idleMs: 5 * 60 * 1000,   // 5 minutes of no activity starts a break
   hbMs: 20000,             // heartbeat interval
-  shotMs: 5 * 60 * 1000,   // screenshot interval
   diffPct: 0.06,           // % of sampled pixels that must change to count as screen activity
   lumThresh: 10,
   lunchMin: 60, shiftStart: '10:00', grace: 10
@@ -48,7 +47,7 @@ async function enter() {
 
 /* ============================== EMPLOYEE ============================== */
 const E = { att: null, stream: null, video: null, cv: null, ctx: null, prev: null, lastAct: Date.now(), state: 'active',
-  lunchStart: null, change: 0, sig: null, pcs: new Map(), ice: new Map(), lastHb: 0, lastShot: 0, worker: null, idleSince: null };
+  lunchStart: null, change: 0, sig: null, pcs: new Map(), ice: new Map(), lastHb: 0, worker: null, idleSince: null };
 
 async function startEmployee() {
   $('eName').textContent = me.full_name;
@@ -56,7 +55,6 @@ async function startEmployee() {
   if (error) { alert(error.message); return; }
   E.att = att; E.lastAct = Date.now();
   $('eLogin').textContent = fmtT(att.login_at);
-  $('eLoginS').innerHTML = att.late ? '<span class="pill late">Late login</span>' : '<span class="pill present">On time</span>';
   const { data: open } = await sb.from('breaks').select('*').eq('user_id', me.id).eq('kind', 'lunch').is('end_at', null).limit(1);
   if (open && open[0]) { E.lunchStart = open[0].start_at; E.state = 'lunch'; }
   await loadEmpData();
@@ -66,7 +64,6 @@ async function startEmployee() {
   const blob = new Blob(['setInterval(()=>postMessage(0),1000)'], { type: 'text/javascript' });
   E.worker = new Worker(URL.createObjectURL(blob));
   E.worker.onmessage = tick; // worker timers are not throttled when the tab is in the background
-  window.addEventListener('beforeunload', () => { try { navigator.sendBeacon && 0; } catch (_) { /* noop */ } });
   renderEmp();
 }
 function bump() { if (E.state !== 'lunch') E.lastAct = Date.now(); }
@@ -109,7 +106,7 @@ async function startShare() {
   E.video = document.createElement('video'); E.video.muted = true; E.video.playsInline = true; E.video.srcObject = stream; await E.video.play().catch(() => {});
   E.cv = document.createElement('canvas'); E.cv.width = 192; E.cv.height = 108; E.ctx = E.cv.getContext('2d', { willReadFrequently: true }); E.prev = null;
   $('gate').classList.add('hidden');
-  E.lastAct = Date.now(); E.lastShot = Date.now() - CFG.shotMs + 30000; // first screenshot after 30s
+  E.lastAct = Date.now();
   sb.rpc('rpc_event', { p_kind: 'share_started', p_detail: 'Entire screen' });
   sendHb(); renderEmp();
 }
@@ -136,25 +133,12 @@ function tick() {
     else if (!idle && E.state === 'idle') { E.state = 'active'; E.idleSince = null; sendHb(); renderEmp(); }
   }
   if (now - E.lastHb >= CFG.hbMs) sendHb();
-  if (E.stream && now - E.lastShot >= CFG.shotMs) shoot();
   if (now % 30000 < 1000) renderEmp(true);
 }
 async function sendHb() {
   E.lastHb = Date.now();
   await sb.rpc('rpc_heartbeat', { p_state: E.state, p_sharing: !!E.stream, p_change: +E.change.toFixed(3), p_surface: E.stream ? 'monitor' : null });
 }
-async function shoot() {
-  E.lastShot = Date.now();
-  try {
-    const v = E.video; const w = 1280, h = Math.round(w * (v.videoHeight / v.videoWidth || 0.5625));
-    const c = document.createElement('canvas'); c.width = w; c.height = h; c.getContext('2d').drawImage(v, 0, 0, w, h);
-    const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.6));
-    const path = `${me.id}/${Date.now()}.jpg`;
-    const { error } = await sb.storage.from('screenshots').upload(path, blob, { contentType: 'image/jpeg' });
-    if (!error) await sb.rpc('rpc_add_screenshot', { p_path: path, p_state: E.state });
-  } catch (_) { /* ignore */ }
-}
-
 /* ---- lunch / logout ---- */
 $('eLunch').onclick = async () => {
   if (E.state === 'lunch') {
@@ -178,13 +162,13 @@ async function renderEmp() {
   $('eShare').className = 'pill ' + (E.stream ? 'active' : 'offline'); $('eShare').textContent = E.stream ? 'Entire screen shared' : 'Screen not shared';
   $('eLunch').textContent = st === 'lunch' ? 'End lunch' : 'Start lunch';
   $('eBanner').innerHTML = st === 'idle' ? `<div class="alert warn">Break started: no activity for 5 minutes (since ${fmtT(E.idleSince)}). Work on your screen to resume.</div>` : '';
-  const { data: a } = await sb.from('attendance').select('active_seconds,idle_seconds').eq('user_id', me.id).eq('work_date', todayIST()).maybeSingle();
-  if (a) { $('eActive').textContent = dur(a.active_seconds); $('eIdle').textContent = dur(a.idle_seconds); }
+  const { data: a } = await sb.rpc('rpc_my_today');
+  if (a && a.login_at) { $('eActive').textContent = dur(a.active_seconds); $('eIdle').textContent = dur(a.idle_seconds); }
   const { data: l } = await sb.from('breaks').select('*').eq('user_id', me.id).eq('kind', 'lunch').eq('work_date', todayIST()).order('start_at');
   if (l && l.length) {
     const tot = l.reduce((s, b) => s + ((b.end_at ? new Date(b.end_at) : new Date()) - new Date(b.start_at)) / 1000, 0);
     $('eLunchT').textContent = dur(tot);
-    $('eLunchS').innerHTML = `${fmtT(l[0].start_at)} to ${l[l.length - 1].end_at ? fmtT(l[l.length - 1].end_at) : 'now'}` + (tot > CFG.lunchMin * 60 ? ' <span class="pill late">over 60 min</span>' : '');
+    $('eLunchS').innerHTML = `${fmtT(l[0].start_at)} to ${l[l.length - 1].end_at ? fmtT(l[l.length - 1].end_at) : 'now'}`;
   } else { $('eLunchT').textContent = '-'; $('eLunchS').textContent = 'Allowed: 60 min'; }
 }
 
@@ -221,17 +205,17 @@ async function onWant(viewer) {
 }
 
 /* ============================== MANAGER ============================== */
-const M = { emp: null, sal: 0, sig: null, pc: null, viewer: Math.random().toString(36).slice(2), connected: false, ice: [], pres: null, att: null, feed: [], shotsToday: 0, tab: 'live' };
+const M = { emp: null, sal: 0, sig: null, pc: null, viewer: Math.random().toString(36).slice(2), connected: false, ice: [], pres: null, att: null, feed: [], tab: 'live' };
 
 async function startManager() {
-  $('attMonth').value = $('payMonth').value = todayIST().slice(0, 7); $('shotDate').value = todayIST();
+  $('attMonth').value = $('payMonth').value = todayIST().slice(0, 7);
   const { data: emps } = await sb.from('profiles').select('*').eq('role', 'employee').limit(1);
   M.emp = emps && emps[0]; if (!M.emp) { $('mAlerts').innerHTML = '<div class="alert">No employee found.</div>'; return; }
-  $('tabs').onclick = (e) => { const t = e.target.dataset.t; if (!t) return; M.tab = t; [...$('tabs').children].forEach((b) => b.classList.toggle('on', b === e.target)); ['live', 'att', 'pay', 'shots', 'work', 'hol'].forEach((k) => $('t-' + k).classList.toggle('hidden', k !== t)); loadTab(t); };
+  $('tabs').onclick = (e) => { const t = e.target.dataset.t; if (!t) return; M.tab = t; [...$('tabs').children].forEach((b) => b.classList.toggle('on', b === e.target)); ['live', 'att', 'pay', 'work', 'hol'].forEach((k) => $('t-' + k).classList.toggle('hidden', k !== t)); loadTab(t); };
   await refreshLive();
   watchScreen();
   const ch = sb.channel('mgr-db');
-  ['presence', 'events', 'attendance', 'breaks', 'screenshots', 'tasks'].forEach((t) => ch.on('postgres_changes', { event: '*', schema: 'public', table: t }, () => { if (M.tab === 'live') refreshLive(); else if (M.tab === 'work' || M.tab === 'shots') loadTab(M.tab); }));
+  ['presence', 'events', 'attendance', 'breaks', 'tasks'].forEach((t) => ch.on('postgres_changes', { event: '*', schema: 'public', table: t }, () => { if (M.tab === 'live') refreshLive(); else if (M.tab === 'work') loadTab(M.tab); }));
   ch.subscribe();
   setInterval(() => { $('mClock').textContent = new Date().toLocaleString('en-IN', { timeZone: CFG.tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: true }); renderLive(); }, 5000);
   setInterval(() => { if (M.tab === 'live') refreshLive(); }, 30000);
@@ -265,15 +249,14 @@ function setLive(on) {
 
 async function refreshLive() {
   const d = todayIST(); const id = M.emp.id;
-  const [p, a, b, ev, sh, lg] = await Promise.all([
+  const [p, a, b, ev, lg] = await Promise.all([
     sb.from('presence').select('*').eq('user_id', id).maybeSingle(),
     sb.from('attendance').select('*').eq('user_id', id).eq('work_date', d).maybeSingle(),
     sb.from('breaks').select('*').eq('user_id', id).eq('work_date', d).order('start_at'),
     sb.from('events').select('*').eq('user_id', id).gte('ts', dayStart(d).toISOString()).order('ts', { ascending: false }).limit(60),
-    sb.from('screenshots').select('id', { count: 'exact', head: true }).eq('user_id', id).gte('ts', dayStart(d).toISOString()),
     sb.from('activity_log').select('ts,state,sharing').eq('user_id', id).gte('ts', dayStart(d).toISOString()).order('ts')
   ]);
-  M.pres = p.data; M.att = a.data; M.breaks = b.data || []; M.feed = ev.data || []; M.shotsToday = sh.count || 0; M.log = lg.data || [];
+  M.pres = p.data; M.att = a.data; M.breaks = b.data || []; M.feed = ev.data || []; M.log = lg.data || [];
   renderLive();
 }
 
@@ -311,8 +294,7 @@ function renderLive() {
     tile('Active', dur(active), 'screen/keyboard activity') +
     tile('Idle breaks', dur(idle), `${(M.breaks || []).filter((b) => b.kind === 'idle').length} breaks (5+ min no activity)`) +
     tile('Productivity', a ? prod + '%' : '-', 'active ÷ (active + idle)') +
-    tile('Last activity', la === null ? '-' : (la < 1 ? 'just now' : la + ' min ago'), '') +
-    tile('Screenshots', M.shotsToday, 'today');
+    tile('Last activity', la === null ? '-' : (la < 1 ? 'just now' : la + ' min ago'), '');
   const lbl = { login: 'Logged in', logout: 'Logged out', lunch_start: 'Lunch started', lunch_end: 'Lunch ended', idle_start: 'Break started (idle)', idle_end: 'Back from break', share_started: 'Started sharing entire screen', share_stopped: 'STOPPED screen sharing', wrong_surface: 'Tried sharing a window/tab (rejected)' };
   $('mFeed').innerHTML = M.feed.length ? M.feed.map((e) => `<div><time>${fmtT(e.ts)}</time><span>${esc(lbl[e.kind] || e.kind)}${e.detail ? ` <span class="muted">${esc(e.detail)}</span>` : ''}</span></div>`).join('') : '<span class="muted">No events yet today.</span>';
   drawTimeline();
@@ -337,8 +319,8 @@ function drawTimeline() {
 }
 
 /* ---- tabs ---- */
-function loadTab(t) { ({ live: refreshLive, att: loadAtt, pay: loadPay, shots: loadShots, work: loadWork, hol: loadHol })[t](); }
-$('attMonth').onchange = loadAtt; $('payMonth').onchange = loadPay; $('shotDate').onchange = loadShots;
+function loadTab(t) { ({ live: refreshLive, att: loadAtt, pay: loadPay, work: loadWork, hol: loadHol })[t](); }
+$('attMonth').onchange = loadAtt; $('payMonth').onchange = loadPay;
 const monthRange = (m) => { const [y, mo] = m.split('-').map(Number); const last = new Date(y, mo, 0).getDate(); return [`${m}-01`, `${m}-${String(last).padStart(2, '0')}`]; };
 const statusLbl = { present: 'Present', late: 'Late', absent: 'Absent', sunday: 'Sunday', holiday: 'Holiday', pending: 'Today', future: '' };
 
@@ -375,17 +357,6 @@ $('salSave').onclick = async () => {
   if (!confirm(`Change monthly salary from ${inr(M.sal)} to ${inr(v)}?`)) return;
   const { error } = await sb.from('compensation').update({ monthly_salary: v }).eq('user_id', M.emp.id); if (error) alert(error.message); loadPay();
 };
-
-async function loadShots() {
-  const d = $('shotDate').value; const from = dayStart(d), to = new Date(from.getTime() + 864e5);
-  const { data } = await sb.from('screenshots').select('*').eq('user_id', M.emp.id).gte('ts', from.toISOString()).lt('ts', to.toISOString()).order('ts', { ascending: false });
-  if (!data || !data.length) { $('shotGrid').innerHTML = '<span class="muted">No screenshots for this day.</span>'; return; }
-  const { data: urls } = await sb.storage.from('screenshots').createSignedUrls(data.map((r) => r.path), 3600);
-  const U = Object.fromEntries((urls || []).map((u) => [u.path, u.signedUrl]));
-  $('shotGrid').innerHTML = data.map((r) => `<div><img loading="lazy" src="${U[r.path] || ''}" data-full="${U[r.path] || ''}"><div class="muted" style="margin-top:4px">${fmtT(r.ts)} <span class="pill ${r.state || ''}">${esc(r.state || '')}</span></div></div>`).join('');
-  $('shotGrid').querySelectorAll('img').forEach((i) => i.onclick = () => { $('lbImg').src = i.dataset.full; $('lightbox').classList.remove('hidden'); });
-}
-$('lightbox').onclick = () => $('lightbox').classList.add('hidden');
 
 async function loadWork() {
   const [t, w] = await Promise.all([

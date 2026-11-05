@@ -60,8 +60,6 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.4p
 .alert.warn{border-color:#e0a21f66;background:#e0a21f18;color:var(--warn)}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .muted{color:var(--muted)}
-.shots{grid-template-columns:repeat(auto-fill,minmax(230px,1fr))}
-.shots img{width:100%;border-radius:8px;border:1px solid var(--line);cursor:zoom-in;display:block}
 .login{min-height:100vh;display:grid;place-items:center;padding:20px}
 .login form{width:min(380px,100%);display:grid;gap:12px}
 .gate{position:fixed;inset:0;background:#0b0e13ee;z-index:20;display:grid;place-items:center;padding:20px;text-align:center}
@@ -70,8 +68,6 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.4p
 canvas#tl{width:100%;height:46px;display:block}
 .legend{display:flex;gap:14px;font-size:12px;color:var(--muted);margin-top:6px;flex-wrap:wrap}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px}
-.lightbox{position:fixed;inset:0;background:#000d;z-index:30;display:grid;place-items:center;padding:20px}
-.lightbox img{max-width:100%;max-height:100%;border-radius:8px}
 .big{font-size:30px;font-weight:700}
 label.f{display:grid;gap:4px;color:var(--muted);font-size:12px}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -91,7 +87,7 @@ label.f{display:grid;gap:4px;color:var(--muted);font-size:12px}
     <label class="f">Password<input id="password" type="password" required autocomplete="current-password"></label>
     <div id="loginErr" class="err"></div>
     <button type="submit">Sign in</button>
-    <div class="muted" style="font-size:12px">Notice: while signed in as an employee, your entire screen is shared with your manager, and activity, attendance and periodic screenshots are recorded.</div>
+    <div class="muted" style="font-size:12px">Notice: while signed in as an employee, your entire screen is shared with your manager, and your activity and attendance are recorded. Your screen is streamed live and is never saved.</div>
   </form>
 </section>
 
@@ -109,7 +105,7 @@ label.f{display:grid;gap:4px;color:var(--muted);font-size:12px}
   <div class="wrap">
     <div id="eBanner"></div>
     <div class="grid tiles">
-      <div class="card tile"><div class="k">Login time</div><div class="v" id="eLogin">-</div><div class="s" id="eLoginS"></div></div>
+      <div class="card tile"><div class="k">Login time</div><div class="v" id="eLogin">-</div></div>
       <div class="card tile"><div class="k">Active time</div><div class="v" id="eActive">-</div></div>
       <div class="card tile"><div class="k">Idle / break</div><div class="v" id="eIdle">-</div></div>
       <div class="card tile"><div class="k">Lunch</div><div class="v" id="eLunchT">-</div><div class="s" id="eLunchS"></div></div>
@@ -150,7 +146,6 @@ label.f{display:grid;gap:4px;color:var(--muted);font-size:12px}
       <button data-t="live" class="on">Live</button>
       <button data-t="att">Attendance</button>
       <button data-t="pay">Payroll</button>
-      <button data-t="shots">Screenshots</button>
       <button data-t="work">Tasks &amp; work logs</button>
       <button data-t="hol">Holidays</button>
     </nav>
@@ -191,11 +186,6 @@ label.f{display:grid;gap:4px;color:var(--muted);font-size:12px}
       <div class="card scroll" style="margin-top:14px"><table id="payTable"></table></div>
     </div>
 
-    <div id="t-shots" class="hidden card">
-      <div class="row"><h3>Screenshots</h3><span class="muted">one every 5 minutes while working</span><span class="sp"></span><input type="date" id="shotDate" style="width:auto"></div>
-      <div id="shotGrid" class="grid shots" style="margin-top:12px"></div>
-    </div>
-
     <div id="t-work" class="hidden two">
       <div class="card">
         <h3>Assign a task</h3>
@@ -214,7 +204,6 @@ label.f{display:grid;gap:4px;color:var(--muted);font-size:12px}
   </div>
 </section>
 
-<div id="lightbox" class="lightbox hidden"><img id="lbImg" alt=""></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script src="app.js"></script>
