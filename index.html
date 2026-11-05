@@ -46,6 +46,7 @@ header.top .sp{flex:1}
 @media(max-width:900px){.live{grid-template-columns:1fr}}
 .player{position:relative;background:#000;border-radius:var(--r);overflow:hidden;aspect-ratio:16/9;border:1px solid var(--line)}
 .player video{width:100%;height:100%;object-fit:contain;background:#000}
+.player img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
 .player .badge{position:absolute;top:10px;left:10px}
 .player .msg{position:absolute;inset:0;display:grid;place-items:center;color:#9aa7b8;text-align:center;padding:20px}
 .player .fs{position:absolute;right:10px;top:10px}
@@ -159,6 +160,7 @@ label.f{display:grid;gap:4px;color:var(--muted);font-size:12px}
         <div>
           <div class="player">
             <video id="mVideo" autoplay playsinline muted></video>
+            <img id="mFrame" class="hidden" alt="">
             <span class="badge pill offline" id="mBadge">Waiting</span>
             <button class="fs ghost" id="mFs">Fullscreen</button>
             <div class="msg" id="mMsg">Video streams only while this Live tab is open. Connecting to the employee's screen…</div>

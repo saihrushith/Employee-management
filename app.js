@@ -65,7 +65,7 @@ async function enter() {
 
 /* ============================== EMPLOYEE ============================== */
 const E = { att: null, stream: null, video: null, cv: null, ctx: null, prev: null, lastAct: Date.now(), state: 'active',
-  lunchStart: null, sid: null, lastWant: new Map(), loggingOut: false, change: 0, sig: null, pcs: new Map(), ice: new Map(), lastHb: 0, worker: null, idleSince: null };
+  lunchStart: null, sid: null, lastWant: new Map(), frameViewers: new Map(), lastFrame: 0, fc: null, loggingOut: false, change: 0, sig: null, pcs: new Map(), ice: new Map(), lastHb: 0, worker: null, idleSince: null };
 
 async function startEmployee() {
   $('eName').textContent = me.full_name;
@@ -155,8 +155,17 @@ function tick() {
     else if (!idle && E.state === 'idle') { E.state = 'active'; E.idleSince = null; sendHb(); renderEmp(); }
   }
   E.pcs.forEach((pc, v) => { if (now - (E.lastWant.get(v) || 0) > 15000) { pc.close(); E.pcs.delete(v); E.lastWant.delete(v); } }); // viewer stopped watching: stop sending video
+  E.frameViewers.forEach((t, v) => { if (now - t > 15000) E.frameViewers.delete(v); });
+  if (E.stream && E.frameViewers.size && (E.change >= 0.02 || now - E.lastFrame > 5000)) sendFrame(); // relay-mode fallback, only when a viewer asked for it
   if (now - E.lastHb >= CFG.hbMs) sendHb();
   if (now % 30000 < 1000) renderEmp(true);
+}
+function sendFrame() {
+  E.lastFrame = Date.now(); const v = E.video; if (!v || v.readyState < 2 || !v.videoWidth) return;
+  const w = 1100, h = Math.round(w * (v.videoHeight / v.videoWidth));
+  const c = E.fc || (E.fc = document.createElement('canvas')); c.width = w; c.height = h; c.getContext('2d').drawImage(v, 0, 0, w, h);
+  const d = c.toDataURL('image/jpeg', 0.5).split(',')[1];
+  E.frameViewers.forEach((_, id) => E.sig.send({ type: 'broadcast', event: 'frame', payload: { to: id, d } }));
 }
 async function sendHb() {
   E.lastHb = Date.now();
@@ -201,7 +210,8 @@ async function renderEmp() {
 function initSignaling() {
   E.sig = sb.channel('screen:' + me.id, { config: { private: true, broadcast: { self: false } } });
   E.sig.on('broadcast', { event: 'want' }, ({ payload }) => onWant(payload.from))
-    .on('broadcast', { event: 'bye' }, ({ payload }) => { const pc = E.pcs.get(payload.from); if (pc) pc.close(); E.pcs.delete(payload.from); E.lastWant.delete(payload.from); })
+    .on('broadcast', { event: 'want_frames' }, ({ payload }) => E.frameViewers.set(payload.from, Date.now()))
+    .on('broadcast', { event: 'bye' }, ({ payload }) => { E.frameViewers.delete(payload.from); const pc = E.pcs.get(payload.from); if (pc) pc.close(); E.pcs.delete(payload.from); E.lastWant.delete(payload.from); })
     .on('broadcast', { event: 'answer' }, async ({ payload }) => {
       if (payload.to !== me.id) return; const pc = E.pcs.get(payload.from); if (!pc) return;
       await pc.setRemoteDescription(payload.sdp); flushIce(payload.from, pc);
@@ -213,7 +223,7 @@ function initSignaling() {
     }).subscribe();
 }
 function flushIce(id, pc) { (E.ice.get(id) || []).forEach((c) => pc.addIceCandidate(c).catch(() => {})); E.ice.delete(id); }
-function closeAllPcs() { E.pcs.forEach((pc) => pc.close()); E.pcs.clear(); E.lastWant.clear(); }
+function closeAllPcs() { E.pcs.forEach((pc) => pc.close()); E.pcs.clear(); E.lastWant.clear(); E.frameViewers.clear(); }
 function lockOut(msg) {
   E.loggingOut = true;
   if (E.stream) E.stream.getTracks().forEach((t) => { t.onended = null; t.stop(); });
@@ -239,11 +249,11 @@ async function onWant(viewer) {
 }
 
 /* ============================== MANAGER ============================== */
-const M = { emp: null, sal: 0, sig: null, pc: null, viewer: Math.random().toString(36).slice(2), connected: false, ice: [], pres: null, att: null, feed: [], tab: 'live' };
+const M = { lastFrame: 0, emp: null, sal: 0, sig: null, pc: null, viewer: Math.random().toString(36).slice(2), connected: false, ice: [], pres: null, att: null, feed: [], tab: 'live' };
 
 async function startManager() {
   $('attMonth').value = $('payMonth').value = todayIST().slice(0, 7);
-  const { data: emps } = await sb.from('profiles').select('*').eq('role', 'employee').limit(1);
+  const { data: emps } = await sb.from('profiles').select('*').eq('role', 'employee').eq('is_test', !!me.is_test).limit(1);
   M.emp = emps && emps[0]; if (!M.emp) { $('mAlerts').innerHTML = '<div class="alert">No employee found.</div>'; return; }
   $('tabs').onclick = (e) => { const t = e.target.dataset.t; if (!t) return; M.tab = t; [...$('tabs').children].forEach((b) => b.classList.toggle('on', b === e.target)); ['live', 'att', 'pay', 'work', 'hol'].forEach((k) => $('t-' + k).classList.toggle('hidden', k !== t)); if (t !== 'live') stopWatch(); else want(); loadTab(t); };
   await refreshLive();
@@ -271,6 +281,10 @@ function watchScreen() {
     await pc.setRemoteDescription(payload.sdp); M.ice.forEach((c) => pc.addIceCandidate(c).catch(() => {})); M.ice = [];
     const ans = await pc.createAnswer(); await pc.setLocalDescription(ans);
     M.sig.send({ type: 'broadcast', event: 'answer', payload: { from: M.viewer, to: payload.from, sdp: pc.localDescription } });
+  }).on('broadcast', { event: 'frame' }, ({ payload }) => {
+    if (payload.to !== M.viewer || M.connected || !watching()) return;
+    M.lastFrame = Date.now(); $('mFrame').src = 'data:image/jpeg;base64,' + payload.d; $('mFrame').classList.remove('hidden'); $('mMsg').classList.add('hidden');
+    $('mBadge').className = 'badge pill active'; $('mBadge').textContent = 'LIVE (relay mode, ~1 frame/sec)';
   }).on('broadcast', { event: 'ice' }, ({ payload }) => {
     if (payload.to !== M.viewer) return;
     if (M.pc && M.pc.remoteDescription) M.pc.addIceCandidate(payload.c).catch(() => {}); else M.ice.push(payload.c);
@@ -279,6 +293,8 @@ function watchScreen() {
     if (!watching()) return;
     if (M.pc && !M.connected && Date.now() - (M.pc._t || 0) > 20000) { M.pc.close(); M.pc = null; } // stuck: start over
     want();
+    if (!M.connected && (!M.pc || Date.now() - (M.pc._t || 0) > 8000)) wantFrames(); // direct video not up: ask for relay frames
+    if (M.lastFrame && Date.now() - M.lastFrame > 12000) { M.lastFrame = 0; $('mFrame').classList.add('hidden'); if (!M.connected) setLive(false); }
   }, 4000); // also acts as keep-alive; employee stops sending video if these stop
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopWatch(); else if (M.tab === 'live') want(); });
   window.addEventListener('pagehide', stopWatch);
@@ -287,11 +303,14 @@ const watching = () => M.tab === 'live' && !document.hidden;
 function stopWatch() {
   if (M.sig) M.sig.send({ type: 'broadcast', event: 'bye', payload: { from: M.viewer } });
   if (M.pc) { M.pc.close(); M.pc = null; }
-  M.connected = false; $('mVideo').srcObject = null; setLive(false);
+  M.connected = false; M.lastFrame = 0; $('mFrame').classList.add('hidden'); $('mVideo').srcObject = null; setLive(false);
 }
 function diag(pc) { if (!M.connected) $('mMsg').textContent = `Connecting to the employee's screen… (network: ${pc.iceConnectionState}${pc.iceConnectionState === 'failed' ? ', retrying' : ''})`; }
+function wantFrames() { if (M.sig) M.sig.send({ type: 'broadcast', event: 'want_frames', payload: { from: M.viewer } }); }
 function want() { if (M.sig) M.sig.send({ type: 'broadcast', event: 'want', payload: { from: M.viewer } }); }
 function setLive(on) {
+  if (!on && M.lastFrame && Date.now() - M.lastFrame < 12000) return; // relay frames are flowing
+  if (on) { $('mFrame').classList.add('hidden'); M.lastFrame = 0; }
   $('mBadge').className = 'badge pill ' + (on ? 'active' : 'offline'); $('mBadge').textContent = on ? 'LIVE' : 'Waiting';
   $('mMsg').classList.toggle('hidden', on);
 }
