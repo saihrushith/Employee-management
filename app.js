@@ -471,3 +471,19 @@ $('idleSave').onclick = async () => {
   const { error } = await sb.from('settings').update({ idle_minutes: v }).eq('id', 1);
   $('idleOk').textContent = error ? error.message : 'Saved. Applies when Divya next logs in or reloads.'; setTimeout(() => $('idleOk').textContent = '', 5000);
 };
+
+/* ---- quiet update notice: tells an open tab when a newer version has been deployed (never reloads by itself) ---- */
+(async function updateWatch() {
+  const sig = async () => { try { const r = await fetch('app.js', { cache: 'no-store' }); const t = await r.text(); return t.length + ':' + (r.headers.get('etag') || ''); } catch (_) { return null; } };
+  const base = await sig(); if (!base) return;
+  window.__checkUpdate = async () => {
+    const s = await sig();
+    if (s && s !== base && !document.getElementById('updBar')) {
+      const d = document.createElement('div'); d.id = 'updBar';
+      d.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:60;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 14px;max-width:320px;font-size:13px;display:grid;gap:8px';
+      d.innerHTML = '<span>A new version is available. Reload when convenient. Employees will need to share their screen again after reloading.</span><button class="ghost" id="updBtn">Reload now</button>';
+      document.body.appendChild(d); document.getElementById('updBtn').onclick = () => location.reload();
+    }
+  };
+  setInterval(window.__checkUpdate, 5 * 60 * 1000);
+})();
