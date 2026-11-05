@@ -293,7 +293,7 @@ function watchScreen() {
     if (!watching()) return;
     if (M.pc && !M.connected && Date.now() - (M.pc._t || 0) > 20000) { M.pc.close(); M.pc = null; } // stuck: start over
     want();
-    if (!M.connected && (!M.pc || Date.now() - (M.pc._t || 0) > 8000)) wantFrames(); // direct video not up: ask for relay frames
+    if (!M.connected && (!M.pc || Date.now() - (M.pc._t || 0) > 4500)) wantFrames(); // direct video not up: ask for relay frames
     if (M.lastFrame && Date.now() - M.lastFrame > 12000) { M.lastFrame = 0; $('mFrame').classList.add('hidden'); if (!M.connected) setLive(false); }
   }, 4000); // also acts as keep-alive; employee stops sending video if these stop
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopWatch(); else if (M.tab === 'live') want(); });
