@@ -59,7 +59,7 @@ async function enter() {
 
 /* ============================== EMPLOYEE ============================== */
 const E = { att: null, stream: null, video: null, cv: null, ctx: null, prev: null, lastAct: Date.now(), state: 'active',
-  lunchStart: null, change: 0, sig: null, pcs: new Map(), ice: new Map(), lastHb: 0, worker: null, idleSince: null };
+  lunchStart: null, sid: null, lastWant: new Map(), loggingOut: false, change: 0, sig: null, pcs: new Map(), ice: new Map(), lastHb: 0, worker: null, idleSince: null };
 
 async function startEmployee() {
   $('eName').textContent = me.full_name;
@@ -67,7 +67,7 @@ async function startEmployee() {
   if (cfg) CFG.idleMs = cfg.idle_minutes * 60 * 1000;
   const { data: att, error } = await sb.rpc('rpc_login');
   if (error) { alert(error.message); return; }
-  E.att = att; E.lastAct = Date.now();
+  E.att = att; E.sid = att.session; E.lastAct = Date.now();
   $('eLogin').textContent = fmtT(att.login_at);
   const { data: open } = await sb.from('breaks').select('*').eq('user_id', me.id).eq('kind', 'lunch').is('end_at', null).limit(1);
   if (open && open[0]) { E.lunchStart = open[0].start_at; E.state = 'lunch'; }
@@ -78,6 +78,7 @@ async function startEmployee() {
   const blob = new Blob(['setInterval(()=>postMessage(0),1000)'], { type: 'text/javascript' });
   E.worker = new Worker(URL.createObjectURL(blob));
   window.addEventListener('pagehide', () => { if (accessToken && !E.loggingOut) fetch(CFG.url + '/rest/v1/rpc/rpc_tab_closed', { method: 'POST', keepalive: true, headers: { apikey: CFG.key, Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {}); });
+  window.addEventListener('beforeunload', (ev) => { if (E.loggingOut) return; ev.preventDefault(); ev.returnValue = ''; }); // browser shows "Leave site?" confirmation
   E.worker.onmessage = tick; // worker timers are not throttled when the tab is in the background
   renderEmp();
 }
@@ -147,19 +148,21 @@ function tick() {
     if (idle && E.state !== 'idle') { E.state = 'idle'; E.idleSince = now; sendHb(); renderEmp(); }
     else if (!idle && E.state === 'idle') { E.state = 'active'; E.idleSince = null; sendHb(); renderEmp(); }
   }
+  E.pcs.forEach((pc, v) => { if (now - (E.lastWant.get(v) || 0) > 15000) { pc.close(); E.pcs.delete(v); E.lastWant.delete(v); } }); // viewer stopped watching: stop sending video
   if (now - E.lastHb >= CFG.hbMs) sendHb();
   if (now % 30000 < 1000) renderEmp(true);
 }
 async function sendHb() {
   E.lastHb = Date.now();
-  await sb.rpc('rpc_heartbeat', { p_state: E.state, p_sharing: !!E.stream, p_change: +E.change.toFixed(3), p_surface: E.stream ? 'monitor' : null });
+  const { error } = await sb.rpc('rpc_heartbeat', { p_session: E.sid, p_state: E.state, p_sharing: !!E.stream, p_change: +E.change.toFixed(3), p_surface: E.stream ? 'monitor' : null });
+  if (error && /session_replaced/.test(error.message)) lockOut('This account was opened in another tab or device. Only one session is allowed. Close this tab.');
 }
 /* ---- lunch / logout ---- */
 $('eLunch').onclick = async () => {
   if (E.state === 'lunch') {
-    await sb.rpc('rpc_end_lunch'); E.state = 'active'; E.lunchStart = null; E.lastAct = Date.now();
+    const r = await sb.rpc('rpc_end_lunch', { p_session: E.sid }); if (r.error && /session_replaced/.test(r.error.message)) return lockOut('Opened in another tab. Close this one.'); E.state = 'active'; E.lunchStart = null; E.lastAct = Date.now();
   } else {
-    await sb.rpc('rpc_start_lunch'); E.state = 'lunch'; E.lunchStart = new Date().toISOString();
+    const r = await sb.rpc('rpc_start_lunch', { p_session: E.sid }); if (r.error) { if (/session_replaced/.test(r.error.message)) return lockOut('Opened in another tab. Close this one.'); return alert(r.error.message); } E.state = 'lunch'; E.lunchStart = new Date().toISOString();
   }
   sendHb(); renderEmp();
 };
@@ -168,7 +171,7 @@ async function empLogout() {
   E.loggingOut = true;
   if (E.stream) E.stream.getTracks().forEach((t) => { t.onended = null; t.stop(); });
   E.stream = null; closeAllPcs(); if (E.worker) E.worker.terminate();
-  await sb.rpc('rpc_logout'); await sb.auth.signOut(); location.reload();
+  await sb.rpc('rpc_logout', { p_session: E.sid }); await sb.auth.signOut(); location.reload();
 }
 $('eOut').onclick = empLogout; $('gateOut').onclick = empLogout;
 
@@ -192,6 +195,7 @@ async function renderEmp() {
 function initSignaling() {
   E.sig = sb.channel('screen:' + me.id, { config: { private: true, broadcast: { self: false } } });
   E.sig.on('broadcast', { event: 'want' }, ({ payload }) => onWant(payload.from))
+    .on('broadcast', { event: 'bye' }, ({ payload }) => { const pc = E.pcs.get(payload.from); if (pc) pc.close(); E.pcs.delete(payload.from); E.lastWant.delete(payload.from); })
     .on('broadcast', { event: 'answer' }, async ({ payload }) => {
       if (payload.to !== me.id) return; const pc = E.pcs.get(payload.from); if (!pc) return;
       await pc.setRemoteDescription(payload.sdp); flushIce(payload.from, pc);
@@ -203,9 +207,17 @@ function initSignaling() {
     }).subscribe();
 }
 function flushIce(id, pc) { (E.ice.get(id) || []).forEach((c) => pc.addIceCandidate(c).catch(() => {})); E.ice.delete(id); }
-function closeAllPcs() { E.pcs.forEach((pc) => pc.close()); E.pcs.clear(); }
+function closeAllPcs() { E.pcs.forEach((pc) => pc.close()); E.pcs.clear(); E.lastWant.clear(); }
+function lockOut(msg) {
+  E.loggingOut = true;
+  if (E.stream) E.stream.getTracks().forEach((t) => { t.onended = null; t.stop(); });
+  E.stream = null; closeAllPcs(); if (E.worker) E.worker.terminate();
+  const d = document.createElement('div'); d.className = 'gate'; d.style.zIndex = 50;
+  d.innerHTML = '<div class="box"><h2>Session closed</h2><div class="muted"></div></div>'; d.querySelector('.muted').textContent = msg; document.body.appendChild(d);
+}
 async function onWant(viewer) {
   if (!E.stream) return;
+  E.lastWant.set(viewer, Date.now());
   const old = E.pcs.get(viewer);
   if (old && ['new', 'connecting', 'connected'].includes(old.connectionState)) return;
   if (old) old.close();
@@ -227,7 +239,7 @@ async function startManager() {
   $('attMonth').value = $('payMonth').value = todayIST().slice(0, 7);
   const { data: emps } = await sb.from('profiles').select('*').eq('role', 'employee').limit(1);
   M.emp = emps && emps[0]; if (!M.emp) { $('mAlerts').innerHTML = '<div class="alert">No employee found.</div>'; return; }
-  $('tabs').onclick = (e) => { const t = e.target.dataset.t; if (!t) return; M.tab = t; [...$('tabs').children].forEach((b) => b.classList.toggle('on', b === e.target)); ['live', 'att', 'pay', 'work', 'hol'].forEach((k) => $('t-' + k).classList.toggle('hidden', k !== t)); loadTab(t); };
+  $('tabs').onclick = (e) => { const t = e.target.dataset.t; if (!t) return; M.tab = t; [...$('tabs').children].forEach((b) => b.classList.toggle('on', b === e.target)); ['live', 'att', 'pay', 'work', 'hol'].forEach((k) => $('t-' + k).classList.toggle('hidden', k !== t)); if (t !== 'live') stopWatch(); else want(); loadTab(t); };
   await refreshLive();
   watchScreen();
   const ch = sb.channel('mgr-db');
@@ -255,7 +267,15 @@ function watchScreen() {
     if (payload.to !== M.viewer) return;
     if (M.pc && M.pc.remoteDescription) M.pc.addIceCandidate(payload.c).catch(() => {}); else M.ice.push(payload.c);
   }).subscribe((s) => { if (s === 'SUBSCRIBED') want(); });
-  setInterval(() => { if (!M.connected) want(); }, 4000);
+  setInterval(() => { if (watching()) want(); }, 4000); // also acts as keep-alive; employee stops sending video if these stop
+  document.addEventListener('visibilitychange', () => { if (document.hidden) stopWatch(); else if (M.tab === 'live') want(); });
+  window.addEventListener('pagehide', stopWatch);
+}
+const watching = () => M.tab === 'live' && !document.hidden;
+function stopWatch() {
+  if (M.sig) M.sig.send({ type: 'broadcast', event: 'bye', payload: { from: M.viewer } });
+  if (M.pc) { M.pc.close(); M.pc = null; }
+  M.connected = false; $('mVideo').srcObject = null; setLive(false);
 }
 function want() { if (M.sig) M.sig.send({ type: 'broadcast', event: 'want', payload: { from: M.viewer } }); }
 function setLive(on) {
@@ -311,7 +331,7 @@ function renderLive() {
     tile('Idle breaks', dur(idle), `${(M.breaks || []).filter((b) => b.kind === 'idle').length} breaks (idle or offline)`) +
     tile('Productivity', a ? prod + '%' : '-', 'active ÷ (active + idle)') +
     tile('Last activity', la === null ? '-' : (la < 1 ? 'just now' : la + ' min ago'), '');
-  const lbl = { login: 'Logged in', logout: 'Logged out', lunch_start: 'Lunch started', lunch_end: 'Lunch ended', idle_start: 'Break started (idle)', offline_gap: 'Was away (tab closed / offline)', tab_closed: 'Closed or refreshed the tab', idle_end: 'Back from break', share_started: 'Started sharing entire screen', share_stopped: 'STOPPED screen sharing', wrong_surface: 'Tried sharing a window/tab (rejected)' };
+  const lbl = { login: 'Logged in', logout: 'Logged out', lunch_start: 'Lunch started', lunch_end: 'Lunch ended', idle_start: 'Break started (idle)', second_login: 'Opened in a 2nd tab/device (older one closed)', offline_gap: 'Was away (tab closed / offline)', tab_closed: 'Closed or refreshed the tab', idle_end: 'Back from break', share_started: 'Started sharing entire screen', share_stopped: 'STOPPED screen sharing', wrong_surface: 'Tried sharing a window/tab (rejected)' };
   $('mFeed').innerHTML = M.feed.length ? M.feed.map((e) => `<div><time>${fmtT(e.ts)}</time><span>${esc(lbl[e.kind] || e.kind)}${e.detail ? ` <span class="muted">${esc(e.detail)}</span>` : ''}</span></div>`).join('') : '<span class="muted">No events yet today.</span>';
   drawTimeline();
 }
@@ -352,7 +372,7 @@ async function loadAtt() {
     const a = A[d.day]; const lunch = B.filter((b) => b.work_date === d.day && b.kind === 'lunch').reduce((x, b) => x + (b.end_at ? (new Date(b.end_at) - new Date(b.start_at)) / 1000 : 0), 0);
     const idles = B.filter((b) => b.work_date === d.day && b.kind === 'idle').length;
     const hrs = a && a.logout_at ? (new Date(a.logout_at) - new Date(a.login_at)) / 1000 - lunch : null;
-    return `<tr><td>${fmtD(d.day + 'T12:00:00+05:30')}</td><td><span class="pill ${d.status}">${statusLbl[d.status]}${d.holiday ? ': ' + esc(d.holiday) : ''}</span></td><td>${a ? fmtT(a.login_at) : '-'}</td><td>${a && a.logout_at ? fmtT(a.logout_at) : '-'}</td><td>${lunch ? dur(lunch) : '-'}</td><td>${hrs !== null ? dur(hrs) : '-'}</td><td>${a ? dur(a.active_seconds) : '-'}</td><td>${a ? dur(a.idle_seconds) + ` (${idles})` : '-'}</td></tr>`;
+    return `<tr><td>${fmtD(d.day + 'T12:00:00+05:30')}</td><td><span class="pill ${d.status}">${statusLbl[d.status]}${d.holiday ? ': ' + esc(d.holiday) : ''}</span></td><td>${a ? fmtT(a.login_at) : '-'}</td><td>${a && a.logout_at ? fmtT(a.logout_at) : (a && d.day < todayIST() ? '<span class="pill late">No logout</span>' : '-')}</td><td>${lunch ? dur(lunch) : '-'}</td><td>${hrs !== null ? dur(hrs) : '-'}</td><td>${a ? dur(a.active_seconds) : '-'}</td><td>${a ? dur(a.idle_seconds) + ` (${idles})` : '-'}</td></tr>`;
   });
   $('attTable').innerHTML = '<tr><th>Date</th><th>Status</th><th>Login</th><th>Logout</th><th>Lunch</th><th>Net hours</th><th>Active</th><th>Idle (breaks)</th></tr>' + rows.join('');
 }
