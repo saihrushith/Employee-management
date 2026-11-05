@@ -5,7 +5,13 @@ const CFG = {
   key: 'sb_publishable_GnI3UN93rW2RzhEJFk4f_w_iKMJZTkg',
   tz: 'Asia/Kolkata',
   // Add a TURN server here if the two networks cannot connect directly.
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }],
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' },
+    // TURN relay for networks that cannot connect directly (carrier NAT, office firewalls). Video stays end-to-end encrypted.
+    // These are the public Open Relay credentials (best effort). For production reliability create a free account at
+    // metered.ca or Cloudflare Realtime TURN and replace this block with your own credentials.
+    { urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turn:openrelay.metered.ca:443?transport=tcp', 'turns:openrelay.metered.ca:443?transport=tcp'], username: 'openrelayproject', credential: 'openrelayproject' }
+  ],
   idleMs: 5 * 60 * 1000,   // 5 minutes of no activity starts a break
   hbMs: 20000,             // heartbeat interval
   diffPct: 0.06,           // % of sampled pixels that must change to count as screen activity
@@ -219,9 +225,9 @@ async function onWant(viewer) {
   if (!E.stream) return;
   E.lastWant.set(viewer, Date.now());
   const old = E.pcs.get(viewer);
-  if (old && ['new', 'connecting', 'connected'].includes(old.connectionState)) return;
+  if (old && (old.connectionState === 'connected' || (['new', 'connecting'].includes(old.connectionState) && Date.now() - (old._t || 0) < 15000))) return;
   if (old) old.close();
-  const pc = new RTCPeerConnection({ iceServers: CFG.iceServers }); E.pcs.set(viewer, pc);
+  const pc = new RTCPeerConnection({ iceServers: CFG.iceServers }); pc._t = Date.now(); E.pcs.set(viewer, pc);
   E.stream.getTracks().forEach((t) => pc.addTrack(t, E.stream));
   pc.onicecandidate = (e) => { if (e.candidate) E.sig.send({ type: 'broadcast', event: 'ice', payload: { from: me.id, to: viewer, c: e.candidate } }); };
   try {
@@ -259,7 +265,9 @@ function watchScreen() {
     const pc = new RTCPeerConnection({ iceServers: CFG.iceServers }); M.pc = pc;
     pc.ontrack = (e) => { $('mVideo').srcObject = e.streams[0]; $('mVideo').play().catch(() => {}); };
     pc.onicecandidate = (e) => { if (e.candidate) M.sig.send({ type: 'broadcast', event: 'ice', payload: { from: M.viewer, to: payload.from, c: e.candidate } }); };
-    pc.onconnectionstatechange = () => { M.connected = pc.connectionState === 'connected'; setLive(M.connected); };
+    pc._t = Date.now();
+    pc.onconnectionstatechange = () => { M.connected = pc.connectionState === 'connected'; setLive(M.connected); diag(pc); };
+    pc.oniceconnectionstatechange = () => diag(pc);
     await pc.setRemoteDescription(payload.sdp); M.ice.forEach((c) => pc.addIceCandidate(c).catch(() => {})); M.ice = [];
     const ans = await pc.createAnswer(); await pc.setLocalDescription(ans);
     M.sig.send({ type: 'broadcast', event: 'answer', payload: { from: M.viewer, to: payload.from, sdp: pc.localDescription } });
@@ -267,7 +275,11 @@ function watchScreen() {
     if (payload.to !== M.viewer) return;
     if (M.pc && M.pc.remoteDescription) M.pc.addIceCandidate(payload.c).catch(() => {}); else M.ice.push(payload.c);
   }).subscribe((s) => { if (s === 'SUBSCRIBED') want(); });
-  setInterval(() => { if (watching()) want(); }, 4000); // also acts as keep-alive; employee stops sending video if these stop
+  setInterval(() => {
+    if (!watching()) return;
+    if (M.pc && !M.connected && Date.now() - (M.pc._t || 0) > 20000) { M.pc.close(); M.pc = null; } // stuck: start over
+    want();
+  }, 4000); // also acts as keep-alive; employee stops sending video if these stop
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopWatch(); else if (M.tab === 'live') want(); });
   window.addEventListener('pagehide', stopWatch);
 }
@@ -277,6 +289,7 @@ function stopWatch() {
   if (M.pc) { M.pc.close(); M.pc = null; }
   M.connected = false; $('mVideo').srcObject = null; setLive(false);
 }
+function diag(pc) { if (!M.connected) $('mMsg').textContent = `Connecting to the employee's screen… (network: ${pc.iceConnectionState}${pc.iceConnectionState === 'failed' ? ', retrying' : ''})`; }
 function want() { if (M.sig) M.sig.send({ type: 'broadcast', event: 'want', payload: { from: M.viewer } }); }
 function setLive(on) {
   $('mBadge').className = 'badge pill ' + (on ? 'active' : 'offline'); $('mBadge').textContent = on ? 'LIVE' : 'Waiting';
