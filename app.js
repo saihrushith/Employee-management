@@ -63,6 +63,27 @@ async function enter() {
   if (p.role === 'manager') { show('v-mgr'); startManager(); } else { show('v-emp'); startEmployee(); }
 }
 
+/* ---- connection diagnostics (used by both sides) ---- */
+function iceTest(policy) {
+  return new Promise((res) => {
+    const out = { host: 0, srflx: 0, relay: 0, errors: [], ms: 0 }; const t0 = performance.now(); let done = false, pc;
+    const fin = () => { if (done) return; done = true; out.ms = Math.round(performance.now() - t0); try { pc.close(); } catch (_) { /* ignore */ } res(out); };
+    try { pc = new RTCPeerConnection({ iceServers: CFG.iceServers, iceTransportPolicy: policy }); } catch (e) { out.errors.push({ url: '-', code: 0, text: String(e.message || e) }); return res(out); }
+    pc.createDataChannel('d');
+    pc.onicecandidate = (e) => { if (!e.candidate) return fin(); const m = / typ (\w+)/.exec(e.candidate.candidate); if (m && out[m[1]] !== undefined) out[m[1]]++; };
+    pc.onicecandidateerror = (e) => out.errors.push({ url: e.url, code: e.errorCode, text: e.errorText });
+    pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === 'complete') fin(); };
+    pc.createOffer().then((o) => pc.setLocalDescription(o)).catch(fin);
+    setTimeout(fin, 8000);
+  });
+}
+async function pairInfo(pc) {
+  if (!pc) return null; const st = await pc.getStats(); let pair; const c = {};
+  st.forEach((r) => { if (r.type === 'local-candidate' || r.type === 'remote-candidate') c[r.id] = r; if (r.type === 'transport' && r.selectedCandidatePairId) pair = st.get(r.selectedCandidatePairId); });
+  if (!pair) st.forEach((r) => { if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') pair = r; });
+  return pair ? { local: (c[pair.localCandidateId] || {}).candidateType, remote: (c[pair.remoteCandidateId] || {}).candidateType } : null;
+}
+
 /* ============================== EMPLOYEE ============================== */
 const E = { att: null, stream: null, video: null, cv: null, ctx: null, prev: null, lastAct: Date.now(), state: 'active',
   lunchStart: null, sid: null, lastWant: new Map(), frameViewers: new Map(), lastFrame: 0, fc: null, loggingOut: false, change: 0, sig: null, pcs: new Map(), ice: new Map(), lastHb: 0, worker: null, idleSince: null };
@@ -210,6 +231,10 @@ async function renderEmp() {
 function initSignaling() {
   E.sig = sb.channel('screen:' + me.id, { config: { private: true, broadcast: { self: false } } });
   E.sig.on('broadcast', { event: 'want' }, ({ payload }) => onWant(payload.from))
+    .on('broadcast', { event: 'diag_req' }, async ({ payload }) => {
+      const [all, rel] = await Promise.all([iceTest('all'), iceTest('relay')]);
+      E.sig.send({ type: 'broadcast', event: 'diag_res', payload: { to: payload.from, all, rel } });
+    })
     .on('broadcast', { event: 'want_frames' }, ({ payload }) => E.frameViewers.set(payload.from, Date.now()))
     .on('broadcast', { event: 'bye' }, ({ payload }) => { E.frameViewers.delete(payload.from); const pc = E.pcs.get(payload.from); if (pc) pc.close(); E.pcs.delete(payload.from); E.lastWant.delete(payload.from); })
     .on('broadcast', { event: 'answer' }, async ({ payload }) => {
@@ -283,7 +308,8 @@ function watchScreen() {
     await pc.setRemoteDescription(payload.sdp); M.ice.forEach((c) => pc.addIceCandidate(c).catch(() => {})); M.ice = [];
     const ans = await pc.createAnswer(); await pc.setLocalDescription(ans);
     M.sig.send({ type: 'broadcast', event: 'answer', payload: { from: M.viewer, to: payload.from, sdp: pc.localDescription } });
-  }).on('broadcast', { event: 'frame' }, ({ payload }) => {
+  }).on('broadcast', { event: 'diag_res' }, ({ payload }) => { if (payload.to === M.viewer && M.diagResolve) M.diagResolve(payload); })
+  .on('broadcast', { event: 'frame' }, ({ payload }) => {
     if (payload.to !== M.viewer || M.connected || !watching()) return;
     M.lastFrame = Date.now(); $('mFrame').src = 'data:image/jpeg;base64,' + payload.d; $('mFrame').classList.remove('hidden'); $('mMsg').classList.add('hidden');
     $('mBadge').className = 'badge pill active'; $('mBadge').textContent = 'LIVE (relay mode, ~1 frame/sec)';
@@ -487,3 +513,29 @@ $('idleSave').onclick = async () => {
   };
   setInterval(window.__checkUpdate, 5 * 60 * 1000);
 })();
+
+/* ---- manager: "Diagnose connection" ---- */
+$('mDiag').onclick = async () => {
+  const out = $('diagOut'); out.classList.remove('hidden');
+  out.innerHTML = '<h3>Connection diagnosis</h3><div id="dgBody" class="muted" style="margin-top:8px">Testing both sides, this takes up to 15 seconds…</div>';
+  const empP = new Promise((res) => { M.diagResolve = res; setTimeout(() => res(null), 16000); });
+  if (M.sig) M.sig.send({ type: 'broadcast', event: 'diag_req', payload: { from: M.viewer } });
+  const [mine, emp] = await Promise.all([Promise.all([iceTest('all'), iceTest('relay')]), empP]); M.diagResolve = null;
+  const why = (e) => ({ 701: 'could not reach the server (network blocks it, or the server is down)', 401: 'login rejected by the relay server', 437: 'login rejected by the relay server', 438: 'login rejected by the relay server' }[e.code] || `error ${e.code} ${e.text || ''}`);
+  const side = (name, all, rel) => {
+    if (!all) return { html: `<li><b>${name}:</b> no answer. That tab is closed or still running an older version. It will answer after its next reload.</li>`, ok: null, issue: null };
+    const stun = all.srflx > 0, turn = rel.relay > 0; const errs = [...new Set((rel.errors.concat(all.errors)).map((e) => `${e.url || ''}: ${why(e)}`))].slice(0, 3);
+    const issue = !stun && !turn ? 'cannot reach any helper server (UDP is blocked)' : !turn ? 'relay server did not answer' : null;
+    return { ok: !issue, issue, html: `<li><b>${name}:</b> public address found (STUN): <b>${stun ? 'yes' : 'no'}</b> · relay server (TURN) answered: <b>${turn ? 'yes' : 'no'}</b>${errs.length ? `<br><span class="muted">${errs.map(esc).join('<br>')}</span>` : ''}</li>` };
+  };
+  const A = side('Your side', mine[0], mine[1]), B = side('Divya\'s side', emp && emp.all, emp && emp.rel);
+  let cur = 'Not receiving video right now.';
+  if (M.connected) { const p = await pairInfo(M.pc); cur = 'Direct video connected' + (p ? ` (${p.local} to ${p.remote}${p.local === 'relay' || p.remote === 'relay' ? ', through the relay server' : ''})` : '') + '.'; }
+  else if (M.lastFrame) cur = 'Relay mode: images about once per second. Direct video is not connected.';
+  let verdict;
+  if (A.issue && B.issue !== undefined && A.issue) verdict = `Your side: ${A.issue}. That alone can stop direct video. A working relay (TURN) account fixes this.`;
+  else if (B.ok === false) verdict = `Divya's side: ${B.issue}. A working relay (TURN) account fixes this.`;
+  else if (A.ok && B.ok) verdict = 'Both sides can reach a relay server, so direct or relayed video should connect. If it is still not LIVE, tell me the "network:" text shown in the video box.';
+  else verdict = A.ok ? 'Your side is fine. Divya\'s side has not reported yet (her tab needs one reload to run this test).' : 'Could not conclude.';
+  $('dgBody').className = ''; $('dgBody').innerHTML = `<p><b>Right now:</b> ${esc(cur)}</p><ul style="margin:8px 0;padding-left:18px;line-height:1.7">${A.html}${B.html}</ul><div class="alert ${A.ok && B.ok ? 'warn' : ''}" style="margin:8px 0 0">${esc(verdict)}</div>`;
+};

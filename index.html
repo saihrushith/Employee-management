@@ -166,8 +166,10 @@ label.f{display:grid;gap:4px;color:var(--muted);font-size:12px}
             <img id="mFrame" class="hidden" alt="">
             <span class="badge pill offline" id="mBadge">Waiting</span>
             <button class="fs ghost" id="mFs">Fullscreen</button>
+            <button class="ghost" id="mDiag" style="position:absolute;left:10px;bottom:10px;z-index:2">Diagnose connection</button>
             <div class="msg" id="mMsg">Video streams only while this Live tab is open. Connecting to the employee's screen…</div>
           </div>
+          <div id="diagOut" class="card hidden" style="margin-top:14px"></div>
           <div class="card" style="margin-top:14px">
             <div class="row"><h3>Today's timeline</h3><span class="sp"></span><span class="muted" id="tlRange"></span></div>
             <canvas id="tl" style="margin-top:10px"></canvas>
