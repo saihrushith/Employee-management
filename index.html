@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Aarviko Workforce</title>
+<script>window.__errs=[];window.addEventListener("error",function(e){window.__errs.push(e.message||String(e))});window.addEventListener("unhandledrejection",function(e){window.__errs.push(String(e.reason&&e.reason.message||e.reason))});</script>
 <style>
 :root{
   --bg:#0e1116;--panel:#161b22;--panel2:#1c232c;--line:#263040;--text:#e6edf3;--muted:#8b98a9;
@@ -81,6 +82,7 @@ label.f{display:grid;gap:4px;color:var(--muted);font-size:12px}
 </style>
 </head>
 <body>
+<div id="boot" style="min-height:100vh;display:grid;place-items:center;text-align:center;padding:20px;color:var(--muted)"><div id="bootMsg">Loading Aarviko Workforce…</div></div>
 
 <!-- LOGIN -->
 <section id="v-login" class="login hidden">
@@ -225,7 +227,14 @@ label.f{display:grid;gap:4px;color:var(--muted);font-size:12px}
     <div class="row" style="justify-content:center"><button type="submit">Update password</button><button type="button" id="pwCancel" class="ghost">Cancel</button></div>
   </form>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="vendor/supabase.min.js"></script>
 <script src="app.js"></script>
+<script>
+setTimeout(function(){
+  var b=document.getElementById('boot'); if(!b||b.style.display==='none') return;
+  var why=(window.__errs||[]).slice(0,2).join(' | ')||'no error reported (the app is still waiting for the server)';
+  document.getElementById('bootMsg').innerHTML='<div style="max-width:460px;display:grid;gap:12px"><h2 style="color:var(--text)">The app did not start</h2><div>This is usually a blocked script (ad blocker, privacy extension, VPN or firewall) or a slow network.</div><div style="font-size:12px">Details: '+why.replace(/</g,'&lt;')+'</div><div><button onclick="location.reload()">Reload</button> <button class="ghost" onclick="try{Object.keys(localStorage).filter(function(k){return k.indexOf(\'sb-\')===0}).forEach(function(k){localStorage.removeItem(k)})}catch(e){}location.reload()">Reset saved login and reload</button></div></div>';
+},8000);
+</script>
 </body>
 </html>

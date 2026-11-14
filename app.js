@@ -27,7 +27,7 @@ const dur = (s) => { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 36
 const todayIST = () => new Date().toLocaleDateString('en-CA', { timeZone: CFG.tz });
 const dayStart = (d) => new Date(`${d}T00:00:00+05:30`);
 const inr = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
-const show = (id) => { ['v-login', 'v-emp', 'v-mgr'].forEach((v) => $(v).classList.toggle('hidden', v !== id)); };
+const show = (id) => { const bt = document.getElementById('boot'); if (bt) bt.style.display = 'none'; ['v-login', 'v-emp', 'v-mgr'].forEach((v) => $(v).classList.toggle('hidden', v !== id)); };
 
 let me = null;
 document.querySelectorAll('.cpw').forEach((b) => b.onclick = () => { $('pwMsg').textContent = ''; $('pwForm').reset(); $('pwModal').classList.remove('hidden'); });
@@ -43,9 +43,14 @@ $('pwForm').onsubmit = async (e) => {
 };
 let accessToken = null; sb.auth.onAuthStateChange((_e, s) => { accessToken = s ? s.access_token : null; });
 (async function boot() {
-  const { data: { session } } = await sb.auth.getSession();
-  if (!session) return show('v-login');
-  await enter();
+  const limit = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timed out')), ms))]);
+  try {
+    const { data: { session } } = await limit(sb.auth.getSession(), 8000);
+    if (!session) return show('v-login');
+    await limit(enter(), 15000);
+  } catch (e) {
+    show('v-login'); $('loginErr').textContent = 'Could not resume your saved session (' + (e.message || e) + '). Please sign in again.';
+  }
 })();
 
 $('loginForm').onsubmit = async (e) => {
