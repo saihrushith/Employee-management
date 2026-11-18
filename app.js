@@ -62,7 +62,10 @@ $('loginForm').onsubmit = async (e) => {
 
 async function enter() {
   const { data: { user } } = await sb.auth.getUser();
-  const { data: p } = await sb.from('profiles').select('*').eq('id', user.id).single();
+  const { data: p, error: pe } = await sb.from('profiles').select('*').eq('id', user.id).single();
+  if (pe && pe.code !== 'PGRST116') { // server/database problem, not a missing account: keep the login and tell the truth
+    show('v-login'); $('loginErr').textContent = 'The server is temporarily unavailable, so your profile could not be loaded. Your account is fine. Please try again in a few minutes.'; return;
+  }
   if (!p) { await sb.auth.signOut(); show('v-login'); $('loginErr').textContent = 'This account has no access.'; return; }
   me = p;
   if (p.role === 'manager') { show('v-mgr'); startManager(); } else { show('v-emp'); startEmployee(); }
