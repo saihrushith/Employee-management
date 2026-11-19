@@ -94,7 +94,7 @@ async function pairInfo(pc) {
 
 /* ============================== EMPLOYEE ============================== */
 const E = { att: null, stream: null, video: null, cv: null, ctx: null, prev: null, lastAct: Date.now(), state: 'active',
-  lunchStart: null, sid: null, lastWant: new Map(), frameViewers: new Map(), lastFrame: 0, fc: null, loggingOut: false, change: 0, sig: null, pcs: new Map(), ice: new Map(), lastHb: 0, worker: null, idleSince: null };
+  lunchStart: null, sid: null, capFast: null, encoding: false, lastWant: new Map(), frameViewers: new Map(), lastFrame: 0, fc: null, loggingOut: false, change: 0, sig: null, pcs: new Map(), ice: new Map(), lastHb: 0, worker: null, idleSince: null };
 
 async function startEmployee() {
   $('eName').textContent = me.full_name;
@@ -139,7 +139,7 @@ async function startShare() {
   let stream;
   try {
     stream = await navigator.mediaDevices.getDisplayMedia({
-      video: { displaySurface: 'monitor', frameRate: { ideal: 10, max: 15 }, width: { max: 1920 } }, audio: false,
+      video: { displaySurface: 'monitor', frameRate: { ideal: 2, max: 5 }, width: { max: 1600 } }, audio: false,
       selfBrowserSurface: 'exclude', surfaceSwitching: 'exclude', monitorTypeSurfaces: 'include', preferCurrentTab: false
     });
   } catch (e) { $('gateErr').textContent = 'Screen sharing was cancelled. It is required to work.'; return; }
@@ -185,16 +185,24 @@ function tick() {
   }
   E.pcs.forEach((pc, v) => { if (now - (E.lastWant.get(v) || 0) > 15000) { pc.close(); E.pcs.delete(v); E.lastWant.delete(v); } }); // viewer stopped watching: stop sending video
   E.frameViewers.forEach((t, v) => { if (now - t > 15000) E.frameViewers.delete(v); });
-  if (E.stream && E.frameViewers.size && (E.change >= 0.02 || now - E.lastFrame > 5000)) sendFrame(); // relay-mode fallback, only when a viewer asked for it
+  const watched = E.pcs.size > 0 || E.frameViewers.size > 0;   // run the screen capture at 1 fps unless someone is watching (saves her CPU)
+  if (E.stream && watched !== E.capFast) { E.capFast = watched; const t = E.stream.getVideoTracks()[0]; if (t) t.applyConstraints({ frameRate: { ideal: watched ? 4 : 1, max: watched ? 5 : 1 } }).catch(() => {}); }
+  if (E.stream && E.frameViewers.size && !E.encoding && (E.change >= 0.02 ? now - E.lastFrame >= 2000 : now - E.lastFrame >= 6000)) sendFrame(); // relay-mode fallback, only when a viewer asked for it
   if (now - E.lastHb >= CFG.hbMs) sendHb();
   if (now % 30000 < 1000) renderEmp(true);
 }
-function sendFrame() {
+async function sendFrame() {
   E.lastFrame = Date.now(); const v = E.video; if (!v || v.readyState < 2 || !v.videoWidth) return;
-  const w = 1100, h = Math.round(w * (v.videoHeight / v.videoWidth));
-  const c = E.fc || (E.fc = document.createElement('canvas')); c.width = w; c.height = h; c.getContext('2d').drawImage(v, 0, 0, w, h);
-  const d = c.toDataURL('image/jpeg', 0.5).split(',')[1];
-  E.frameViewers.forEach((_, id) => E.sig.send({ type: 'broadcast', event: 'frame', payload: { to: id, d } }));
+  E.encoding = true;
+  try {
+    const w = 960, h = Math.round(w * (v.videoHeight / v.videoWidth));
+    const c = E.fc || (E.fc = document.createElement('canvas')); c.width = w; c.height = h; c.getContext('2d').drawImage(v, 0, 0, w, h);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.5));   // async: does not freeze her screen
+    if (!blob) return;
+    const buf = new Uint8Array(await blob.arrayBuffer()); let s = ''; for (let k = 0; k < buf.length; k += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(k, k + 0x8000));
+    const d = btoa(s);
+    E.frameViewers.forEach((_, id) => E.sig.send({ type: 'broadcast', event: 'frame', payload: { to: id, d } }));
+  } catch (_) { /* ignore */ } finally { E.encoding = false; }
 }
 async function sendHb() {
   E.lastHb = Date.now();
@@ -275,7 +283,7 @@ async function onWant(viewer) {
   pc.onicecandidate = (e) => { if (e.candidate) E.sig.send({ type: 'broadcast', event: 'ice', payload: { from: me.id, to: viewer, c: e.candidate } }); };
   try {
     const sender = pc.getSenders()[0]; const p = sender.getParameters(); p.encodings = p.encodings && p.encodings.length ? p.encodings : [{}];
-    p.encodings[0].maxBitrate = 1500000; p.encodings[0].maxFramerate = 10; await sender.setParameters(p);
+    p.encodings[0].maxBitrate = 700000; p.encodings[0].maxFramerate = 5; const tw = (E.stream.getVideoTracks()[0].getSettings() || {}).width || 1280; if (tw > 1280) p.encodings[0].scaleResolutionDownBy = +(tw / 1280).toFixed(2); await sender.setParameters(p);
   } catch (_) { /* optional */ }
   const offer = await pc.createOffer(); await pc.setLocalDescription(offer);
   E.sig.send({ type: 'broadcast', event: 'offer', payload: { from: me.id, to: viewer, sdp: pc.localDescription } });
@@ -320,7 +328,7 @@ function watchScreen() {
   .on('broadcast', { event: 'frame' }, ({ payload }) => {
     if (payload.to !== M.viewer || M.connected || !watching()) return;
     M.lastFrame = Date.now(); $('mFrame').src = 'data:image/jpeg;base64,' + payload.d; $('mFrame').classList.remove('hidden'); $('mMsg').classList.add('hidden');
-    $('mBadge').className = 'badge pill active'; $('mBadge').textContent = 'LIVE (relay mode, ~1 frame/sec)';
+    $('mBadge').className = 'badge pill active'; $('mBadge').textContent = 'LIVE (relay mode, a new image every few seconds)';
   }).on('broadcast', { event: 'ice' }, ({ payload }) => {
     if (payload.to !== M.viewer) return;
     if (M.pc && M.pc.remoteDescription) M.pc.addIceCandidate(payload.c).catch(() => {}); else M.ice.push(payload.c);
