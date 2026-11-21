@@ -56,7 +56,13 @@ let accessToken = null; sb.auth.onAuthStateChange((_e, s) => { accessToken = s ?
 $('loginForm').onsubmit = async (e) => {
   e.preventDefault(); $('loginErr').textContent = '';
   const { error } = await sb.auth.signInWithPassword({ email: $('email').value.trim().toLowerCase(), password: $('password').value });
-  if (error) { $('loginErr').textContent = 'Wrong email or password.'; return; }
+  if (error) {
+    const bad = error.status === 400 || error.code === 'invalid_credentials';
+    $('loginErr').textContent = bad ? 'Wrong email or password. If your browser auto-filled the password, retype it yourself.'
+      : error.status === 429 ? 'Too many attempts. Wait a minute and try again.'
+      : 'Could not reach the server (' + (error.message || 'network error') + '). Check your internet connection and try again. Your password was not checked.';
+    return;
+  }
   await enter();
 };
 
